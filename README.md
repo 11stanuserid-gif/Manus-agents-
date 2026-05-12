@@ -1,6 +1,6 @@
-# 5-Agent Telegram Bot Workflow
+# 5-Agent Telegram Bot Workflow (Node.js)
 
-This project implements a sequential workflow using 5 different Telegram bots acting as agents.
+This project implements a sequential workflow using 5 different Telegram bots acting as agents, powered by OpenRouter Free Models.
 
 ## Workflow
 1. **Agent 1 (Research)**: Researches internet gaps and suggests top 5 app ideas.
@@ -11,9 +11,9 @@ This project implements a sequential workflow using 5 different Telegram bots ac
 
 ## Setup
 1. Clone the repo.
-2. Install dependencies: `pip install -r requirements.txt`.
-3. Set `OPENROUTER_API_KEY` in your environment variables. This project uses OpenRouter's free models (e.g., Gemini 2.0 Flash Exp Free).
-4. Run `python src/main.py`.
+2. Install dependencies: `npm install`.
+3. Set `OPENROUTER_API_KEY` in your environment variables.
+4. Run `npm start`.
 
 ## Deployment
-Deployed on Render as a background worker.
+Deployed on Render as a Web Service.
