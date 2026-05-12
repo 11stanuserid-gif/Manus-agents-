@@ -1,17 +1,19 @@
 import os
 import asyncio
 import logging
+import requests
+import json
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from openai import OpenAI
 
 # Setup logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # API Keys and Bot Tokens
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+# Using a popular free model on OpenRouter
+FREE_MODEL = "google/gemini-2.0-flash-exp:free"
 
 BOT_TOKENS = {
     "agent1": "8637645009:AAGGZySuIQixiPbQ7nzgknVVDKDGHh0vOf8",
@@ -40,14 +42,28 @@ AGENT_PROMPTS = {
 
 async def get_ai_response(agent_id, user_input):
     prompt = AGENT_PROMPTS[agent_id]
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": user_input}
-        ]
+    
+    response = requests.post(
+        url="https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        data=json.dumps({
+            "model": FREE_MODEL,
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": user_input}
+            ]
+        })
     )
-    return response.choices[0].message.content
+    
+    if response.status_code == 200:
+        result = response.json()
+        return result['choices'][0]['message']['content']
+    else:
+        logger.error(f"OpenRouter Error: {response.text}")
+        return f"Error from AI service: {response.status_code}"
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, agent_id: str):
     text = update.message.text
@@ -62,18 +78,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, age
     if next_agent:
         next_token = BOT_TOKENS[next_agent]
         next_bot = Bot(token=next_token)
-        # We need a chat ID to send to. For this workflow, we'll send it back to the same user 
-        # but the user will see it coming from the next bot if they interact with it.
-        # However, in a real 'agent' workflow, we might want to trigger the next bot automatically.
-        # Since bots can't easily message each other directly without a shared chat, 
-        # we will simulate the flow by having the current bot tell the user what to send to the next one,
-        # or we can try to send it to the user's chat ID via the next bot's token.
         chat_id = update.effective_chat.id
         await next_bot.send_message(chat_id=chat_id, text=f"Message from {agent_id}:\n\n{ai_output}")
         await update.message.reply_text(f"Sent output to {next_agent}.")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("I am ready. Send me a topic or just say 'start' to begin the research workflow.")
+    await update.message.reply_text("I am ready. Send me a topic or just say 'start' to begin the research workflow using OpenRouter Free Models.")
 
 def create_agent_app(agent_id, token):
     application = Application.builder().token(token).build()
@@ -83,6 +93,10 @@ def create_agent_app(agent_id, token):
     return application
 
 async def main():
+    if not OPENROUTER_API_KEY:
+        logger.error("OPENROUTER_API_KEY not found in environment variables!")
+        return
+
     # Run all bots concurrently
     apps = [create_agent_app(aid, token) for aid, token in BOT_TOKENS.items()]
     
@@ -96,7 +110,7 @@ async def main():
     tasks = [app.updater.start_polling() for app in apps]
     await asyncio.gather(*tasks)
     
-    logger.info("All bots are running...")
+    logger.info("All bots are running with OpenRouter...")
     # Keep running until interrupted
     while True:
         await asyncio.sleep(1)
