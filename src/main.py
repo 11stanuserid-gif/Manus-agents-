@@ -3,6 +3,8 @@ import asyncio
 import logging
 import requests
 import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -12,7 +14,6 @@ logger = logging.getLogger(__name__)
 
 # API Keys and Bot Tokens
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-# Using a popular free model on OpenRouter
 FREE_MODEL = "google/gemini-2.0-flash-exp:free"
 
 BOT_TOKENS = {
@@ -23,13 +24,12 @@ BOT_TOKENS = {
     "agent5": "8731377222:AAEhUjyFx-jTIYI4tAJ3om-NseBsBgu0fGA"
 }
 
-# Mapping of which bot sends to which bot
 WORKFLOW = {
     "agent1": "agent2",
     "agent2": "agent3",
     "agent3": "agent4",
     "agent4": "agent5",
-    "agent5": None  # Final agent
+    "agent5": None
 }
 
 AGENT_PROMPTS = {
@@ -40,50 +40,64 @@ AGENT_PROMPTS = {
     "agent5": "You are a Technical Consultant. You will receive a PRD. Review the features and confirm the technical requirements. List all the materials, tools, and technologies needed to build this app. This is the final step."
 }
 
+# Dummy HTTP Server for Render
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Bot is running!")
+
+def run_health_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    logger.info(f"Starting health check server on port {port}")
+    server.serve_forever()
+
 async def get_ai_response(agent_id, user_input):
     prompt = AGENT_PROMPTS[agent_id]
-    
-    response = requests.post(
-        url="https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        data=json.dumps({
-            "model": FREE_MODEL,
-            "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": user_input}
-            ]
-        })
-    )
-    
-    if response.status_code == 200:
-        result = response.json()
-        return result['choices'][0]['message']['content']
-    else:
-        logger.error(f"OpenRouter Error: {response.text}")
-        return f"Error from AI service: {response.status_code}"
+    try:
+        response = requests.post(
+            url="https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            data=json.dumps({
+                "model": FREE_MODEL,
+                "messages": [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": user_input}
+                ]
+            }),
+            timeout=60
+        )
+        if response.status_code == 200:
+            result = response.json()
+            return result['choices'][0]['message']['content']
+        else:
+            return f"Error from AI service: {response.status_code}"
+    except Exception as e:
+        return f"Error: {str(e)}"
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, agent_id: str):
     text = update.message.text
-    logger.info(f"Agent {agent_id} received message: {text[:50]}...")
+    logger.info(f"Agent {agent_id} received message")
+    await update.message.reply_text(f"Processing with {agent_id.upper()}...")
     
-    # Process with AI
     ai_output = await get_ai_response(agent_id, text)
-    await update.message.reply_text(f"--- {agent_id.upper()} PROCESSING COMPLETE ---\n\n{ai_output}")
+    await update.message.reply_text(f"--- {agent_id.upper()} COMPLETE ---\n\n{ai_output}")
     
-    # Forward to next agent if exists
     next_agent = WORKFLOW.get(agent_id)
     if next_agent:
         next_token = BOT_TOKENS[next_agent]
         next_bot = Bot(token=next_token)
         chat_id = update.effective_chat.id
-        await next_bot.send_message(chat_id=chat_id, text=f"Message from {agent_id}:\n\n{ai_output}")
-        await update.message.reply_text(f"Sent output to {next_agent}.")
+        await next_bot.send_message(chat_id=chat_id, text=f"Input for {next_agent} (from {agent_id}):\n\n{ai_output}")
+        await update.message.reply_text(f"Forwarded to {next_agent}.")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("I am ready. Send me a topic or just say 'start' to begin the research workflow using OpenRouter Free Models.")
+    await update.message.reply_text("Workflow is active. Send a topic to Agent 1 to begin.")
 
 def create_agent_app(agent_id, token):
     application = Application.builder().token(token).build()
@@ -94,13 +108,14 @@ def create_agent_app(agent_id, token):
 
 async def main():
     if not OPENROUTER_API_KEY:
-        logger.error("OPENROUTER_API_KEY not found in environment variables!")
+        logger.error("OPENROUTER_API_KEY missing!")
         return
 
-    # Run all bots concurrently
+    # Start health check server in a separate thread
+    threading.Thread(target=run_health_server, daemon=True).start()
+
     apps = [create_agent_app(aid, token) for aid, token in BOT_TOKENS.items()]
     
-    # Start all applications
     tasks = [app.initialize() for app in apps]
     await asyncio.gather(*tasks)
     
@@ -110,8 +125,7 @@ async def main():
     tasks = [app.updater.start_polling() for app in apps]
     await asyncio.gather(*tasks)
     
-    logger.info("All bots are running with OpenRouter...")
-    # Keep running until interrupted
+    logger.info("All bots running...")
     while True:
         await asyncio.sleep(1)
 
