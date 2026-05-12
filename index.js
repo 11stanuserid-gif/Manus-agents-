@@ -11,7 +11,7 @@ app.listen(port, () => console.log(`Health check server listening on port ${port
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 // Switching to a more stable free model
-const FREE_MODEL = "mistralai/mistral-7b-instruct:free";
+const FREE_MODEL = "google/gemini-2.0-flash-lite-preview-02-05:free";
 
 const BOT_TOKENS = {
     agent1: "8637645009:AAGGZySuIQixiPbQ7nzgknVVDKDGHh0vOf8",
