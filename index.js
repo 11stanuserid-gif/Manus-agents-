@@ -6,12 +6,12 @@ require('dotenv').config();
 const app = express();
 const port = process.env.PORT || 8080;
 
-// Health check for Render
 app.get('/', (req, res) => res.send('Bots are running!'));
 app.listen(port, () => console.log(`Health check server listening on port ${port}`));
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const FREE_MODEL = "google/gemini-2.0-flash-exp:free";
+// Switching to a more stable free model
+const FREE_MODEL = "mistralai/mistral-7b-instruct:free";
 
 const BOT_TOKENS = {
     agent1: "8637645009:AAGGZySuIQixiPbQ7nzgknVVDKDGHh0vOf8",
@@ -40,6 +40,7 @@ const AGENT_PROMPTS = {
 async function getAIResponse(agentId, userInput) {
     const prompt = AGENT_PROMPTS[agentId];
     try {
+        console.log(`Calling OpenRouter for ${agentId} with model ${FREE_MODEL}...`);
         const response = await axios.post("https://openrouter.ai/api/v1/chat/completions", {
             model: FREE_MODEL,
             messages: [
@@ -49,13 +50,23 @@ async function getAIResponse(agentId, userInput) {
         }, {
             headers: {
                 "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-                "Content-Type": "application/json"
-            }
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://render.com", // Required by some OpenRouter models
+                "X-Title": "Telegram Agent Workflow"
+            },
+            timeout: 90000 // 90 seconds timeout
         });
-        return response.data.choices[0].message.content;
+
+        if (response.data && response.data.choices && response.data.choices[0]) {
+            return response.data.choices[0].message.content;
+        } else {
+            console.error("Unexpected OpenRouter response format:", JSON.stringify(response.data));
+            return "Error: AI returned an empty or invalid response.";
+        }
     } catch (error) {
-        console.error(`AI Error for ${agentId}:`, error.response ? error.response.data : error.message);
-        return "Error from AI service.";
+        const errorMsg = error.response ? JSON.stringify(error.response.data) : error.message;
+        console.error(`AI Error for ${agentId}:`, errorMsg);
+        return `AI Service Error: ${errorMsg.substring(0, 100)}... Check Render logs for details.`;
     }
 }
 
@@ -69,28 +80,28 @@ Object.entries(BOT_TOKENS).forEach(([agentId, token]) => {
 
     bot.on('text', async (ctx) => {
         const text = ctx.message.text;
-        console.log(`${agentId} received message`);
-        await ctx.reply(`Processing with ${agentId.toUpperCase()}...`);
+        console.log(`${agentId} received message: ${text.substring(0, 20)}...`);
+        await ctx.reply(`Processing with ${agentId.toUpperCase()}... Please wait.`);
 
         const aiOutput = await getAIResponse(agentId, text);
         await ctx.reply(`--- ${agentId.toUpperCase()} COMPLETE ---\n\n${aiOutput}`);
 
         const nextAgentId = WORKFLOW[agentId];
-        if (nextAgentId) {
+        if (nextAgentId && !aiOutput.startsWith("AI Service Error")) {
             const nextBotToken = BOT_TOKENS[nextAgentId];
             const nextBot = new Telegraf(nextBotToken);
-            await nextBot.telegram.sendMessage(ctx.chat.id, `Input for ${nextAgentId} (from ${agentId}):\n\n${aiOutput}`);
-            await ctx.reply(`Forwarded to ${nextAgentId}.`);
+            try {
+                await nextBot.telegram.sendMessage(ctx.chat.id, `Input for ${nextAgentId} (from ${agentId}):\n\n${aiOutput}`);
+                await ctx.reply(`Forwarded to ${nextAgentId}.`);
+            } catch (err) {
+                console.error(`Failed to forward to ${nextAgentId}:`, err.message);
+                await ctx.reply(`Error: Could not forward to ${nextAgentId}.`);
+            }
         }
     });
 
-    bot.launch().then(() => console.log(`${agentId} launched`));
+    bot.launch().then(() => console.log(`${agentId} launched`)).catch(err => console.error(`${agentId} launch failed:`, err.message));
 });
 
-// Enable graceful stop
-process.once('SIGINT', () => {
-    Object.values(bots).forEach(bot => bot.stop('SIGINT'));
-});
-process.once('SIGTERM', () => {
-    Object.values(bots).forEach(bot => bot.stop('SIGTERM'));
-});
+process.once('SIGINT', () => Object.values(bots).forEach(bot => bot.stop('SIGINT')));
+process.once('SIGTERM', () => Object.values(bots).forEach(bot => bot.stop('SIGTERM')));
